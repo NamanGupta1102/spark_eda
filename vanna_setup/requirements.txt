@@ -1,0 +1,5 @@
+vanna
+python-dotenv
+openai
+chromadb
+PyMySQL
