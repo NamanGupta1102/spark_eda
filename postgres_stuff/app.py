@@ -7,7 +7,7 @@ import io
 # --- ENV VARS (Render will handle these) ---
 PG_USER = "user1"
 PG_PASSWORD = "BbWTihWnsBHglVpeKK8XfQgEPDOcokZZ"
-PG_HOST = "dpg-d3g661u3jp1c73eg9v1g-a.render.com"      # something like xyz.render.com
+PG_HOST = "dpg-d3g661u3jp1c73eg9v1g-a.internal"      # something like xyz.render.com
 PG_PORT = "5432"               # default Postgres port
 PG_DB = "crime_rate_h3u5"
 
