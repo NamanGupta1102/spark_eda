@@ -16,7 +16,7 @@ CSV_FOLDER = "./data"
 
 # --- CREATE CONNECTION ---
 engine = create_engine(
-    f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}"
+    f"postgresql://user1:BbWTihWnsBHglVpeKK8XfQgEPDOcokZZ@dpg-d3g661u3jp1c73eg9v1g-a.ohio-postgres.render.com/crime_rate_h3u5"
 )
 
 CSV_LINKS = {
