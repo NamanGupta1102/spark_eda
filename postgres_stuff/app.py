@@ -2,6 +2,8 @@ import os
 import pandas as pd
 from sqlalchemy import create_engine
 import requests
+import io
+
 # --- ENV VARS (Render will handle these) ---
 PG_USER = "user1"
 PG_PASSWORD = "BbWTihWnsBHglVpeKK8XfQgEPDOcokZZ"
@@ -28,7 +30,7 @@ def upload_csvs():
         response = requests.get(link)
         response.raise_for_status()
 
-        df = pd.read_csv(pd.compat.StringIO(response.text))
+        df = pd.read_csv(io.StringIO(response.text))
         df.to_sql(table_name, engine, if_exists="replace", index=False)
         print(f"✅ Uploaded {table_name}")
 
