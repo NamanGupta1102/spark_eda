@@ -20,7 +20,7 @@ engine = create_engine(
 )
 
 CSV_LINKS = {
-    "crimes311": "https://drive.google.com/file/d/1oUwuYMgmioHLSJq2DxzVKjm0NU6uhmu3/view?usp=sharing"
+    "crimes311": "https://drive.google.com/uc?export=download&id=1oUwuYMgmioHLSJq2DxzVKjm0NU6uhmu3"
     # ...
 }
 
