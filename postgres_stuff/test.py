@@ -37,7 +37,10 @@ def preview_data(table_name):
             result = conn.execute(text(f"SELECT * FROM {table_name} LIMIT 5;"))
             rows = result.fetchall()
             print(f"🔍 Preview of table '{table_name}':")
+            print("Something")
+            print(rows)
             for row in rows:
+                print("SOmething")
                 print(row)
     except Exception as e:
         print(f"❌ Could not preview data from '{table_name}':")
@@ -47,4 +50,4 @@ if __name__ == "__main__":
     test_connection()
     list_tables()
     # Uncomment and edit this line to preview a specific table
-    # preview_data("crimes311")
+    preview_data("crimes311")

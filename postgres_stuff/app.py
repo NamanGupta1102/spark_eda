@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import requests
 import io
 
@@ -30,8 +30,17 @@ def upload_csvs():
         response = requests.get(link)
         response.raise_for_status()
 
-        df = pd.read_csv(io.StringIO(response.text))
+        df = pd.read_csv("data/Dorchester_311.csv")
+        print(df.head())
         df.to_sql(table_name, engine, if_exists="replace", index=False)
+        # Print first 5 rows from the uploaded table
+
+        print(f"📋 First 5 rows of {table_name}:")
+        with engine.connect() as conn:
+            result = conn.execute(text(f"SELECT * FROM {table_name} LIMIT 5"))
+            rows = result.fetchall()
+            for i, row in enumerate(rows, 1):
+                print(f"  Row {i}: {row}")
         print(f"✅ Uploaded {table_name}")
 
 if __name__ == "__main__":
