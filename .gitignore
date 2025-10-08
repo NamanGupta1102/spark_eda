@@ -5,3 +5,9 @@
 /vanna_setup/772307de-e46c-4739-acc8-8d916ed9d215
 /vanna_setup/e8fa5601-dde9-4619-9489-8460ba9eb40d
 /postgres_stuff/data
+/postgres_stuff/8c29ea2c-3247-4a72-b77d-28ba84b2e42f
+/postgres_stuff/__pycache__
+/postgres_stuff/a05a220d-ce67-441b-b60b-8730feb0bc9f
+postgres_stuff/chroma.sqlite3
+vanna_setup/chroma.sqlite3
+vanna_setup/vanna_mysql.py

@@ -8,6 +8,7 @@ from vanna.openai import OpenAI_Chat
 from vanna.chromadb import ChromaDB_VectorStore
 from dotenv import load_dotenv
 import os
+from urllib.parse import urlparse
 
 # Load environment variables
 load_dotenv()
@@ -37,21 +38,34 @@ def setup_vanna():
     return vn
 
 def connect_to_database(vn):
-    """Connect to your local MySQL database"""
-    print("🔗 Connecting to local MySQL database...")
-    
+    """Connect to the provided PostgreSQL database URL"""
+    print("🔗 Connecting to PostgreSQL database...")
+
     try:
-        vn.connect_to_mysql(
-            host='localhost',
-            dbname='rethinkai_db',
-            user='rethinkai_user',
-            password='MySecureUserPass123!',
-            port=3306
+        # Provided PostgreSQL URL
+        database_url = (
+            "postgresql://user1:BbWTihWnsBHglVpeKK8XfQgEPDOcokZZ@"
+            "dpg-d3g661u3jp1c73eg9v1g-a.ohio-postgres.render.com/crime_rate_h3u5"
         )
-        print("✅ Connected to MySQL database")
+
+        parsed = urlparse(database_url)
+        host = parsed.hostname or ""
+        dbname = (parsed.path or "/").lstrip("/")
+        user = parsed.username or ""
+        password = parsed.password or ""
+        port = parsed.port or 5432
+
+        vn.connect_to_postgres(
+            host=host,
+            dbname=dbname,
+            user=user,
+            password=password,
+            port=port,
+        )
+        print("✅ Connected to PostgreSQL database")
         return True
     except Exception as e:
-        print(f"❌ Failed to connect to MySQL: {e}")
+        print(f"❌ Failed to connect to PostgreSQL: {e}")
         return False
 
 def train_vanna(vn):
