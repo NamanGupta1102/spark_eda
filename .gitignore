@@ -11,3 +11,4 @@
 postgres_stuff/chroma.sqlite3
 vanna_setup/chroma.sqlite3
 vanna_setup/vanna_mysql.py
+postgres_stuff/chroma.sqlite3
