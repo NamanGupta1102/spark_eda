@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+from dotenv import load_dotenv
 
 from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
@@ -13,9 +14,8 @@ from langchain_core.messages import HumanMessage
 
 DB_URL = "postgresql://user1:BbWTihWnsBHglVpeKK8XfQgEPDOcokZZ@dpg-d3g661u3jp1c73eg9v1g-a.ohio-postgres.render.com/crime_rate_h3u5"
 
-# Hardcode OpenAI key directly (per request)
-OPENAI_API_KEY = "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"
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+# Load environment variables from .env file
+load_dotenv()
 
 # LangSmith tracing (enable + credentials + optional project/run metadata)
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
@@ -28,7 +28,11 @@ os.environ["LANGCHAIN_SESSION"] = "local-dev"
 
 
 def build_agent():
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    model = os.getenv("OPENAI_MODEL", "gpt-4")
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not found in .env file")
+    llm = ChatOpenAI(model=model, api_key=api_key, temperature=0)
     db = SQLDatabase.from_uri(DB_URL)
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
     tools = toolkit.get_tools()
@@ -36,7 +40,7 @@ def build_agent():
 
 
 def main():
-    question = "Which pin code has the most requests?"
+    question = "what are the most common 311 call by week?"
     agent = build_agent()
     result = agent.invoke({"messages": [HumanMessage(content=question)]})
     messages = result.get("messages", [])

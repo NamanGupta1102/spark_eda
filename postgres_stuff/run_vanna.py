@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Simple Vanna Flask App for PostgreSQL (direct connection, no env, no extras)
+Simple Vanna Flask App for PostgreSQL using OpenAI from .env
 """
 
-from vanna.openai import OpenAI_Chat
+import os
+from dotenv import load_dotenv
 from vanna.chromadb import ChromaDB_VectorStore
 from vanna.flask import VannaFlaskApp
+from vanna.openai import OpenAI_Chat
 
 
 class MyVanna(ChromaDB_VectorStore, OpenAI_Chat):
@@ -16,10 +18,23 @@ class MyVanna(ChromaDB_VectorStore, OpenAI_Chat):
 
 def main():
     print("🚀 Starting Vanna Flask App...")
-
-    # Initialize with OpenAI API key directly
+    
+    # Load environment variables from .env file
+    load_dotenv()
+    
+    # Get OpenAI credentials from .env
+    openai_api_key = os.getenv('OPENAI_API_KEY')
+    openai_model = os.getenv('OPENAI_MODEL', 'gpt-4')
+    
+    print(f"Using OpenAI model: {openai_model}")
+    
+    if not openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY not found in .env file")
+    
+    # Initialize with OpenAI API key from .env
     vn = MyVanna(config={
-        'api_key': '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',
+        'api_key': openai_api_key,
+        'model': openai_model,
         'allow_llm_to_see_data': True
     })
 

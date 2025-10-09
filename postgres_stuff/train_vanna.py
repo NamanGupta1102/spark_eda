@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
 """
-Minimal training script for Vanna (direct credentials, no env).
+Minimal training script for Vanna using Gemini from .env.
 Reflects the live Postgres schema via SQLAlchemy and trains Vanna with
 concise documentation of tables and columns.
 """
 
 from typing import List
 from sqlalchemy import create_engine, inspect
+from dotenv import load_dotenv
 
-from vanna.openai import OpenAI_Chat
 from vanna.chromadb import ChromaDB_VectorStore
-
+from vanna.openai import OpenAI_Chat
+import os
 
 class MyVanna(ChromaDB_VectorStore, OpenAI_Chat):
     def __init__(self, config=None):
+        OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+        OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4')
+        
         ChromaDB_VectorStore.__init__(self, config=config)
-        OpenAI_Chat.__init__(self, config=config)
+        OpenAI_Chat.__init__(self, config={'api_key': OPENAI_API_KEY, 'model': OPENAI_MODEL})
 
+
+# Clear all GEMINI and GOOGLE environment variables first
+# for key in list(os.environ.keys()):
+#     if key.startswith('GEMINI_') or key.startswith('GOOGLE_'):
+#         del os.environ[key]
+
+# Load environment variables from .env file
+load_dotenv()
 
 POSTGRES_HOST = 'dpg-d3g661u3jp1c73eg9v1g-a.ohio-postgres.render.com'
 POSTGRES_DB = 'crime_rate_h3u5'
@@ -24,7 +36,12 @@ POSTGRES_USER = 'user1'
 POSTGRES_PASSWORD = 'BbWTihWnsBHglVpeKK8XfQgEPDOcokZZ'
 POSTGRES_PORT = 5432
 
-OPENAI_API_KEY = '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'
+# Get Gemini credentials from .env
+# GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')  # Fallback to hardcoded key
+# GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'models/gemini-2.0-flash-001')  # Default model
+# Get OpenAI credentials from .env
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4')
 
 
 def build_schema_documentation() -> str:
@@ -223,14 +240,18 @@ def build_question_sql_pairs() -> List[dict]:
 
 
 def main():
-    print("🔎 Reflecting schema from PostgreSQL...")
+    print("Reflecting schema from PostgreSQL...")
     schema_doc = build_schema_documentation()
-    print("✅ Schema reflection completed")
+    print("Schema reflection completed")
 
-    vn = MyVanna(config={
-        'api_key': OPENAI_API_KEY,
-        'allow_llm_to_see_data': True
-    })
+    # Debug: Check what's being loaded
+    print(f"DEBUG: OPENAI_API_KEY = {OPENAI_API_KEY}")
+    print(f"DEBUG: OPENAI_MODEL = {OPENAI_MODEL}")
+    
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not found in .env file")
+
+    vn = MyVanna()
 
     vn.connect_to_postgres(
         host=POSTGRES_HOST,
@@ -239,19 +260,19 @@ def main():
         password=POSTGRES_PASSWORD,
         port=POSTGRES_PORT
     )
-    print("✅ Connected to PostgreSQL for training")
+    print("Connected to PostgreSQL for training")
 
-    print("🧠 Training Vanna with schema documentation...")
+    print("Training Vanna with schema documentation...")
     vn.train(documentation=schema_doc)
     vn.train(documentation=build_crimes311_documentation())
 
     # Add dynamic question-SQL pairs based on schema
     pairs = build_question_sql_pairs()
-    print(f"➕ Adding {len(pairs)} question–SQL training pairs...")
+    print(f"Adding {len(pairs)} question-SQL training pairs...")
     for p in pairs:
         vn.train(question=p['question'], sql=p['sql'])
 
-    print("🎉 Training complete")
+    print("Training complete")
 
 
 if __name__ == '__main__':
