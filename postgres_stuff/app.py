@@ -1,8 +1,7 @@
 import os
 import pandas as pd
 from sqlalchemy import create_engine, text
-import requests
-import io
+import glob
 
 # --- ENV VARS (Render will handle these) ---
 PG_USER = "user1"
@@ -19,21 +18,19 @@ engine = create_engine(
     f"postgresql://user1:BbWTihWnsBHglVpeKK8XfQgEPDOcokZZ@dpg-d3g661u3jp1c73eg9v1g-a.ohio-postgres.render.com/crime_rate_h3u5"
 )
 
-CSV_LINKS = {
-    "crimes311": "https://drive.google.com/uc?export=download&id=1oUwuYMgmioHLSJq2DxzVKjm0NU6uhmu3"
-    # ...
-}
+LOCAL_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 def upload_csvs():
-    for table_name, link in CSV_LINKS.items():
-        print(f"Downloading {table_name}...")
-        response = requests.get(link)
-        response.raise_for_status()
+    csv_paths = sorted(glob.glob(os.path.join(LOCAL_DATA_DIR, "*.csv")))
+    if not csv_paths:
+        print(f"No CSV files found in {LOCAL_DATA_DIR}")
+        return
 
-        df = pd.read_csv("data/Dorchester_311.csv")
-        print(df.head())
+    for file_path in csv_paths:
+        table_name = os.path.splitext(os.path.basename(file_path))[0]
+        print(f"Uploading {table_name} from {file_path}...")
+        df = pd.read_csv(file_path)
         df.to_sql(table_name, engine, if_exists="replace", index=False)
-        # Print first 5 rows from the uploaded table
 
         print(f"📋 First 5 rows of {table_name}:")
         with engine.connect() as conn:
