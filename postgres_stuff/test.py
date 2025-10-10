@@ -50,4 +50,4 @@ if __name__ == "__main__":
     test_connection()
     list_tables()
     # Uncomment and edit this line to preview a specific table
-    preview_data("crimes311")
+    # preview_data("crimes311")
