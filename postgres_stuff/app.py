@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 from sqlalchemy import create_engine, text
+from sqlalchemy import inspect
 import glob
 
 # --- ENV VARS (Render will handle these) ---
@@ -21,6 +22,12 @@ engine = create_engine(
 LOCAL_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 def upload_csvs():
+    # Drop all existing tables first
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table_name in inspector.get_table_names():
+            conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE;'))
+
     csv_paths = sorted(glob.glob(os.path.join(LOCAL_DATA_DIR, "*.csv")))
     if not csv_paths:
         print(f"No CSV files found in {LOCAL_DATA_DIR}")
@@ -32,12 +39,12 @@ def upload_csvs():
         df = pd.read_csv(file_path)
         df.to_sql(table_name, engine, if_exists="replace", index=False)
 
-        print(f"📋 First 5 rows of {table_name}:")
-        with engine.connect() as conn:
-            result = conn.execute(text(f"SELECT * FROM {table_name} LIMIT 5"))
-            rows = result.fetchall()
-            for i, row in enumerate(rows, 1):
-                print(f"  Row {i}: {row}")
+        # print(f"📋 First 5 rows of {table_name}:")
+        # with engine.connect() as conn:
+        #     result = conn.execute(text(f"SELECT * FROM {table_name} LIMIT 5"))
+        #     rows = result.fetchall()
+        #     for i, row in enumerate(rows, 1):
+        #         print(f"  Row {i}: {row}")
         print(f"✅ Uploaded {table_name}")
 
 if __name__ == "__main__":
