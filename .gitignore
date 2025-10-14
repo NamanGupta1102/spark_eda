@@ -16,3 +16,6 @@ postgres_stuff/chroma.sqlite3
 postgres_stuff/chroma.sqlite3
 postgres_stuff/tempCodeRunnerFile.py
 postgres_stuff/data.zip
+pf/maps
+pf/pockety
+pf/__pycache__

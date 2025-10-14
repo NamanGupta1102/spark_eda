@@ -5,13 +5,16 @@ from sqlalchemy import create_engine, text
 from openai import OpenAI
 from langsmith import Client
 from pocketflow import Flow, Node
-# import dotenv
+import folium
+from datetime import datetime
+import dotenv
 
-# dotenv.load_dotenv()
+dotenv.load_dotenv()
 
 # Configuration
 DB_URL = os.getenv('DB_URL')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+
 
 # Set environment variables for LangSmith
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
@@ -196,6 +199,55 @@ class RunQueryNode(Node):
         print(f"Got {len(exec_res['df'])} rows")
         return "default"  # Return action to trigger next node
 
+class PlotMapNode(Node):
+    def prep(self, shared):
+        return shared.get("df")
+    
+    def exec(self, prep_res):
+        df = prep_res
+        
+        # Check if df has latitude and longitude columns
+        lat_col = None
+        lon_col = None
+        
+        for col in df.columns:
+            col_lower = col.lower()
+            if 'lat' in col_lower and not lon_col:
+                lat_col = col
+            if 'lon' in col_lower or 'lng' in col_lower:
+                lon_col = col
+        
+        if not lat_col or not lon_col or len(df) == 0:
+            return None
+        
+        # Create map centered on mean coordinates
+        center_lat = df[lat_col].mean()
+        center_lon = df[lon_col].mean()
+        
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+        
+        # Add markers
+        for _, row in df.iterrows():
+            folium.Marker(
+                location=[row[lat_col], row[lon_col]]
+            ).add_to(m)
+        
+        # Create maps folder if it doesn't exist
+        os.makedirs("maps", exist_ok=True)
+        
+        # Save map
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"maps/map_{timestamp}.html"
+        m.save(filename)
+        
+        return filename
+    
+    def post(self, shared, prep_res, exec_res):
+        if exec_res:
+            shared["map_file"] = exec_res
+            print(f"\nMap saved to: {exec_res}")
+        return "default"
+
 class GenerateAnswerNode(Node):
     def prep(self, shared):
         print("\nGenerating answer...")
@@ -254,12 +306,13 @@ def main():
     get_schema_node = GetSchemaNode()
     generate_sql_node = GenerateSQLNode()
     run_query_node = RunQueryNode()
+    plot_map_node = PlotMapNode()
     generate_answer_node = GenerateAnswerNode()
     summary_node = SummaryNode()
     
     # Wire nodes together
     flow = Flow().start(get_schema_node)
-    get_schema_node >> generate_sql_node >> run_query_node >> generate_answer_node >> summary_node
+    get_schema_node >> generate_sql_node >> run_query_node >> plot_map_node >> generate_answer_node >> summary_node
     
     # Run pipeline
     question = "What are the top 5 request types by count?"
