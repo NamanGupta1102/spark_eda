@@ -1,358 +1,190 @@
 """
-Simple PocketFlow PostgreSQL Agent
+Pocket Flow – Minimal NL → SQL Orchestrator
 
-Minimal PocketFlow implementation for querying a PostgreSQL database.
-Adds optional LLM-backed Natural-Language → SQL translation.
+This file implements the smallest Pocket Flow-compliant pipeline focused only on
+turning a user's natural language query into a single SELECT SQL statement.
+
+Flow nodes (deterministic, explicit contracts):
+- receive_query: http → request envelope
+- query_analysis: llm_small → intent/entities/flags
+- metadata_retrieval: metadata_store (from .txt JSON) → tables/columns, schema_hash
+- sql_generation: llm_strong → single SELECT SQL (validated)
+- respond: http_response → returns SQL payload
+
+Environment (.env):
+- OPENAI_API_KEY
+- OPENAI_MODEL
+- METADATA_FILE (path to JSON .txt containing tables/columns)
 """
 
+from __future__ import annotations
+
+import hashlib
+import json
 import os
 import re
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from typing import Dict, Any, List
-from abc import ABC, abstractmethod
-from contextlib import closing
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-try:
-    # Optional; only used if OPENAI_API_KEY is provided
-    from dotenv import load_dotenv
-except Exception:  # pragma: no cover
-    load_dotenv = None
+from dotenv import load_dotenv  # type: ignore
+from openai import OpenAI  # type: ignore
 
 
-class Node(ABC):
-    """Base class for all PocketFlow nodes"""
-    
-    @abstractmethod
-    def execute(self, shared_store: Dict[str, Any]) -> None:
-        """Execute the node's logic and update the shared store"""
-        pass
+# ----------------------------- Utility structures -----------------------------
 
 
-class DatabaseQueryNode(Node):
-    """Node that executes SQL queries against PostgreSQL database"""
-    
-    def __init__(self, db_config: Dict[str, str]):
-        self.db_config = db_config
-    
-    def execute(self, shared_store: Dict[str, Any]) -> None:
-        """Execute SQL query and store results in shared store"""
-        query = shared_store.get('sql_query', 'SELECT 1 as test')
-        
-        try:
-            conn = psycopg2.connect(**self.db_config)
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(query)
-                results = cursor.fetchall()
-                
-                # Convert to JSON-serializable format
-                json_results = [dict(row) for row in results]
-                
-                shared_store['query_results'] = json_results
-                shared_store['query_success'] = True
-                shared_store['row_count'] = len(json_results)
-                
-        except Exception as e:
-            shared_store['query_error'] = str(e)
-            shared_store['query_success'] = False
-        finally:
-            if 'conn' in locals():
-                conn.close()
+@dataclass
+class Request:
+    user_id: Optional[str]
+    query_text: str
+    locale: Optional[str]
+    session_id: Optional[str]
+    request_id: str
+    received_at: str
 
 
-class NLToSQLNode(Node):
-    """Node that converts natural language to SQL using an LLM (optional).
+class PocketFlowAgent:
+    def __init__(self, metadata_file: Optional[Path] = None) -> None:
+        load_dotenv()
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
+        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.llm = OpenAI(api_key=self.openai_api_key)
 
-    - If the input already looks like SQL, it is passed through unchanged.
-    - If no OPENAI_API_KEY or OpenAI SDK is available, falls back to simple rules.
-    """
-
-    def __init__(self, db_config: Dict[str, str]):
-        self.db_config = db_config
-        if load_dotenv is not None:
-            try:
-                load_dotenv()
-            except Exception:
-                pass
-        self.openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
-
-    def _looks_like_sql(self, text: str) -> bool:
-        if not text:
-            return False
-        head = text.strip().lower()
-        return bool(re.match(r"^(with|select|explain|show|describe|\s*--)", head))
-
-    def _introspect_schema(self) -> str:
-        """Return a compact schema description to guide the LLM.
-
-        Keeps it short to reduce token usage.
-        """
-        ddl_lines: List[str] = []
-        try:
-            with closing(psycopg2.connect(**self.db_config)) as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(
-                        """
-                        SELECT table_name
-                        FROM information_schema.tables
-                        WHERE table_schema='public'
-                        ORDER BY table_name
-                        LIMIT 5
-                        """
-                    )
-                    tables = [r["table_name"] for r in cur.fetchall()]
-                    for t in tables:
-                        cur.execute(
-                            """
-                            SELECT column_name, data_type
-                            FROM information_schema.columns
-                            WHERE table_schema='public' AND table_name=%s
-                            ORDER BY ordinal_position
-                            LIMIT 40
-                            """,
-                            (t,),
-                        )
-                        cols = ", ".join(f"{r['column_name']} {r['data_type']}" for r in cur.fetchall())
-                        ddl_lines.append(f"TABLE {t}({cols})")
-        except Exception:
-            # Best effort; empty schema is acceptable
-            pass
-        return "\n".join(ddl_lines)[:2000]
-
-    def _fallback_rules(self, nl: str) -> str:
-        q = nl.lower()
-        if "top" in q and "request" in q and "count" in q:
-            return (
-                "SELECT case_title, COUNT(*) AS count "
-                "FROM crimes311 GROUP BY case_title ORDER BY count DESC LIMIT 5"
-            )
-        if "total" in q and ("records" in q or "rows" in q or "count" in q):
-            return "SELECT COUNT(*) AS total_records FROM crimes311"
-        if "recent" in q or "latest" in q:
-            return "SELECT * FROM crimes311 ORDER BY open_dt DESC NULLS LAST LIMIT 10"
-        if "district" in q:
-            return (
-                "SELECT police_district, COUNT(*) AS count FROM crimes311 "
-                "WHERE police_district IS NOT NULL GROUP BY police_district "
-                "ORDER BY count DESC LIMIT 10"
-            )
-        return "SELECT * FROM crimes311 LIMIT 5"
-
-    def _call_openai(self, nl: str, schema: str) -> str:
-        try:
-            from openai import OpenAI  # type: ignore
-        except Exception as e:  # SDK not installed
-            raise RuntimeError("OpenAI SDK not installed. Install 'openai'.") from e
-
-        client = OpenAI(api_key=self.openai_api_key)
-        system_prompt = (
-            "You are a PostgreSQL expert. Translate the user's natural language question "
-            "into a single safe SQL SELECT query in PostgreSQL dialect using the given schema. "
-            "Rules: only SELECT queries, never modify data, prefer explicit columns, include LIMIT 100 if not present, "
-            "and ensure valid identifiers. Return ONLY the SQL, no prose, no code fences."
-        )
-        user_prompt = (
-            f"Schema (approx):\n{schema}\n\n"
-            f"Question: {nl}\n\n"
-            "Output: a single SQL SELECT statement."
+        env_metadata = os.getenv("METADATA_FILE")
+        self.metadata_file = Path(env_metadata) if env_metadata else (
+            metadata_file if metadata_file is not None else (Path.cwd() / "pocketflow_stuff" / "metadata" / "schema.txt")
         )
 
-        # Use chat.completions for wide compatibility
-        resp = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+    # ---------------------------- Public interface ----------------------------
+
+    def handle_request(self, query_text: str, user_id: Optional[str] = None, locale: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
+        request = self._receive_query(user_id=user_id, query_text=query_text, locale=locale, session_id=session_id)
+        analysis = self._query_analysis(request)
+        metadata = self._metadata_retrieval()
+        sql_payload = self._sql_generation(request, analysis, metadata)
+        return self._respond(sql_payload)
+
+    # ------------------------------ Node: receive -----------------------------
+
+    def _receive_query(self, user_id: Optional[str], query_text: str, locale: Optional[str], session_id: Optional[str]) -> Request:
+        request = Request(
+            user_id=user_id,
+            query_text=query_text,
+            locale=locale,
+            session_id=session_id,
+            request_id=str(uuid.uuid4()),
+            received_at=datetime.utcnow().isoformat() + "Z",
+        )
+        return request
+
+    # --------------------------- Node: query_analysis -------------------------
+
+    def _query_analysis(self, request: Request) -> Dict[str, Any]:
+        system = "You are a lightweight parser. Extract intent and entities from the user query."
+        user = request.query_text
+        instructions = "Return JSON with fields: intent, entities, date_ranges, summary_flag, limit. Ensure valid JSON only."
+
+        completion = self.llm.chat.completions.create(
+            model=self.openai_model,
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+                {"role": "system", "content": instructions},
             ],
-            temperature=0,
+            temperature=0.1,
         )
-        sql = resp.choices[0].message.content.strip()
-        # Strip code fences if present
-        sql = re.sub(r"^```.*\n|\n```$", "", sql).strip()
-        # Safety: force SELECT and add LIMIT if missing
-        if not sql.lower().startswith("select") and not sql.lower().startswith("with"):
-            raise RuntimeError("Model did not return a SELECT/CTE query.")
-        if re.search(r"\blimit\b", sql, flags=re.IGNORECASE) is None:
-            sql += " LIMIT 100"
-        return sql
+        text = completion.choices[0].message.content or "{}"
+        parsed = json.loads(text)
 
-    def execute(self, shared_store: Dict[str, Any]) -> None:
-        text = shared_store.get('user_input') or shared_store.get('sql_query') or ""
-        if self._looks_like_sql(text):
-            shared_store['sql_query'] = text
-            shared_store['nl2sql_used'] = False
-            return
+        intent = parsed.get("intent")
+        if intent not in ["aggregate", "timeseries", "slice", "count", "top_k"]:
+            intent = "slice"
 
-        # Need NL → SQL
-        if not self.openai_api_key:
-            # Fallback to deterministic rules if no API key
-            shared_store['sql_query'] = self._fallback_rules(text)
-            shared_store['nl2sql_used'] = False
-            shared_store['nl2sql_mode'] = 'fallback_rules'
-            return
+        return {
+            "request_id": request.request_id,
+            "intent": intent,
+            "entities": parsed.get("entities", []),
+            "date_ranges": parsed.get("date_ranges", []),
+            "summary_flag": bool(parsed.get("summary_flag")),
+            "limit": parsed.get("limit"),
+            "raw_query_text": request.query_text,
+        }
 
-        schema = self._introspect_schema()
-        try:
-            sql = self._call_openai(text, schema)
-            shared_store['sql_query'] = sql
-            shared_store['nl2sql_used'] = True
-            shared_store['nl2sql_mode'] = 'openai'
-        except Exception as e:
-            # Last-resort fallback
-            shared_store['sql_query'] = self._fallback_rules(text)
-            shared_store['nl2sql_used'] = False
-            shared_store['nl2sql_mode'] = f"fallback_due_to_error: {e}"
+    # ------------------------ Node: metadata_retrieval ------------------------
 
+    def _metadata_retrieval(self) -> Dict[str, Any]:
+        raw = self.metadata_file.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        tables = data["tables"] if isinstance(data, dict) and "tables" in data else data
+        schema_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return {"tables": tables, "schema_hash": schema_hash}
 
-class ResultFormatterNode(Node):
-    """Node that formats query results for display"""
-    
-    def execute(self, shared_store: Dict[str, Any]) -> None:
-        """Format query results for display"""
-        if not shared_store.get('query_success', False):
-            shared_store['formatted_output'] = f"Error: {shared_store.get('query_error', 'Unknown error')}"
-            return
-        
-        results = shared_store.get('query_results', [])
-        row_count = shared_store.get('row_count', 0)
-        
-        if row_count == 0:
-            shared_store['formatted_output'] = "Query executed successfully but returned no results."
-            return
-        
-        # Simple formatting
-        output_lines = [f"Query returned {row_count} rows:"]
-        for i, row in enumerate(results[:10], 1):  # Limit to first 10 rows
-            output_lines.append(f"Row {i}: {row}")
-        
-        if row_count > 10:
-            output_lines.append(f"... and {row_count - 10} more rows")
-        
-        shared_store['formatted_output'] = '\n'.join(output_lines)
+    # -------------------------- Node: sql_generation --------------------------
 
+    def _sql_generation(self, request: Request, analysis: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
+        tables_json = json.dumps(metadata.get("tables", []))
+        raw_query = analysis.get("raw_query_text", request.query_text)
+        limit = analysis.get("limit")
 
-class Flow:
-    """Simple PocketFlow implementation"""
-    
-    def __init__(self):
-        self.nodes: Dict[str, Node] = {}
-        self.transitions: Dict[str, List[str]] = {}
-    
-    def add_node(self, name: str, node: Node) -> None:
-        """Add a node to the flow"""
-        self.nodes[name] = node
-    
-    def add_transition(self, from_node: str, to_node: str) -> None:
-        """Add a transition between nodes"""
-        if from_node not in self.transitions:
-            self.transitions[from_node] = []
-        self.transitions[from_node].append(to_node)
-    
-    def execute(self, shared_store: Dict[str, Any], start_node: str = None) -> Dict[str, Any]:
-        """Execute the flow starting from the specified node"""
-        if start_node is None:
-            start_node = list(self.nodes.keys())[0]
-        
-        current_node = start_node
-        execution_path = [current_node]
-        
-        while current_node in self.nodes:
-            # Execute current node
-            self.nodes[current_node].execute(shared_store)
-            
-            # Move to next node
-            if current_node in self.transitions and self.transitions[current_node]:
-                current_node = self.transitions[current_node][0]
-                execution_path.append(current_node)
-            else:
-                break
-        
-        shared_store['execution_path'] = execution_path
-        return shared_store
+        system = (
+            "You are a strict SQL generator. Produce a single executable SELECT statement that answers the user's question using the provided schema. Do not produce comments or extra text. If the schema cannot answer the query, return {\"error\":\"schema_mismatch\"}.\n"
+            "CONTEXT: Use only one SELECT statement. Tables/columns are exactly as defined in the schema JSON."
+        )
+        user = f"SCHEMA_JSON: {tables_json}\nUSER_QUERY: {raw_query}"
+        requirements = f"If a LIMIT is provided ({limit}), use it; otherwise include LIMIT 1000 or less."
+
+        completion = self.llm.chat.completions.create(
+            model=self.openai_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+                {"role": "system", "content": requirements},
+            ],
+            temperature=0.1,
+        )
+        sql_text = (completion.choices[0].message.content or "").strip().strip("`")
+
+        is_valid = self._is_single_select(sql_text)
+        payload: Dict[str, Any] = {
+            "request_id": request.request_id,
+            "schema_hash": metadata.get("schema_hash"),
+            "sql_text": sql_text,
+            "is_valid_single_select": is_valid,
+        }
+        if not is_valid:
+            payload["error"] = "not_single_select"
+        return payload
+
+    @staticmethod
+    def _is_single_select(sql_text: str) -> bool:
+        text = sql_text.strip().rstrip(";")
+        return text.lower().startswith("select ") and ";" not in text
+
+    # ----------------------------- Node: respond ------------------------------
+
+    def _respond(self, sql_payload: Dict[str, Any]) -> Dict[str, Any]:
+        return sql_payload
 
 
-class PostgreSQLAgent:
-    """Simple PostgreSQL agent using PocketFlow"""
-    
-    def __init__(self, db_config: Dict[str, str]):
-        self.db_config = db_config
-        self.flow = self._build_flow()
-    
-    def _build_flow(self) -> Flow:
-        """Build the agent flow"""
-        flow = Flow()
-        
-        # Create nodes
-        n2s_node = NLToSQLNode(self.db_config)
-        query_node = DatabaseQueryNode(self.db_config)
-        formatter_node = ResultFormatterNode()
-        
-        # Add nodes to flow
-        flow.add_node('translate_nl', n2s_node)
-        flow.add_node('query_database', query_node)
-        flow.add_node('format_results', formatter_node)
-        
-        # Define flow transitions
-        flow.add_transition('translate_nl', 'query_database')
-        flow.add_transition('query_database', 'format_results')
-        
-        return flow
-    
-    def query(self, sql_query: str) -> str:
-        """Execute a SQL query using the agent flow"""
-        shared_store = {'sql_query': sql_query}
-        
-        # Execute the flow
-        # Start after translation to ensure uniform path
-        result = self.flow.execute(shared_store, 'translate_nl')
-        
-        return result.get('formatted_output', 'No output generated')
-
-    def ask(self, text: str) -> str:
-        """Natural-language entry point. Translates to SQL (LLM or fallback) and executes."""
-        shared_store = {'user_input': text}
-        result = self.flow.execute(shared_store, 'translate_nl')
-        sql = result.get('sql_query', '')
-        # If translation produced SQL, run remaining nodes explicitly
-        if 'query_results' not in result:
-            # Continue from query -> formatter
-            result = self.flow.execute(result, 'query_database')
-        formatted = result.get('formatted_output', 'No output generated')
-        return f"SQL: {sql}\n\n{formatted}"
+# ----------------------------------- CLI -------------------------------------
 
 
-# Database configuration (same as your existing setup)
-DB_CONFIG = {
-    'host': 'dpg-d3g661u3jp1c73eg9v1g-a.ohio-postgres.render.com',
-    'port': 5432,
-    'database': 'crime_rate_h3u5',
-    'user': 'user1',
-    'password': 'BbWTihWnsBHglVpeKK8XfQgEPDOcokZZ'
-}
-
-
-def main():
-    """Simple demo of the PocketFlow agent"""
-    agent = PostgreSQLAgent(DB_CONFIG)
-    
-    # Test queries
-    test_queries = [
-        "SELECT COUNT(*) as total_records FROM crimes311",
-        "SELECT * FROM crimes311 LIMIT 3",
-        "SELECT case_title, COUNT(*) as count FROM crimes311 GROUP BY case_title ORDER BY count DESC LIMIT 5"
-    ]
-    
-    print("Simple PocketFlow PostgreSQL Agent")
-    print("=" * 40)
-    
-    for i, query in enumerate(test_queries, 1):
-        print(f"\nQuery {i}: {query}")
-        print("-" * 30)
-        
-        result = agent.query(query)
-        print(result)
-        print()
+def run_interactive() -> None:
+    agent = PocketFlowAgent()
+    print("Pocket Flow (NL→SQL) ready. Type a question, or 'exit' to quit.")
+    while True:
+        q = input("\nQuery> ").strip()
+        if not q or q.lower() in {"exit", "quit"}:
+            break
+        result = agent.handle_request(q)
+        print("\n--- SQL Payload ---")
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
-    main()
+    run_interactive()
+
+
