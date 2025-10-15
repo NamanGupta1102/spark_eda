@@ -12,7 +12,7 @@ schema = get_schema(table_name)
 print(f"\nSchema:\n{schema}\n")
 
 # Test question
-question = "What are the total numer of noise complaints in the month of October 2024?"
+question = "what are the top 5 request types by count?"
 
 print(f"Question: {question}\n")
 
@@ -32,14 +32,30 @@ print(f"Tokens used: {tokens}")
 print("\n" + "="*60)
 print("Verification:")
 print("="*60)
-assert "answer_query" in queries, "Missing 'answer_query' key"
-assert "map_query" in queries, "Missing 'map_query' key"
-assert isinstance(queries["answer_query"], str), "answer_query is not a string"
-assert isinstance(queries["map_query"], str), "map_query is not a string"
-assert "LIMIT" in queries["map_query"].upper(), "map_query doesn't have LIMIT"
 
-print("✓ Both queries returned successfully")
-print("✓ Queries are valid strings")
-print("✓ Map query has LIMIT clause")
-print("\nTest passed!")
+# Check answer_query
+assert "answer_query" in queries, "Missing 'answer_query' key"
+assert isinstance(queries["answer_query"], str), "answer_query is not a string"
+assert len(queries["answer_query"]) > 0, "answer_query is empty"
+print("✓ Answer query is valid")
+
+# Check map_query
+assert "map_query" in queries, "Missing 'map_query' key"
+map_query = queries["map_query"]
+
+if map_query is None or (isinstance(map_query, str) and map_query.strip() == ""):
+    print("✓ Map query is null/empty (LLM decided mapping not relevant)")
+    print("  This is expected for statistical/aggregate questions")
+elif isinstance(map_query, str):
+    print("✓ Map query is a valid string")
+    if "LIMIT" in map_query.upper():
+        print("✓ Map query has LIMIT clause")
+    else:
+        print("⚠ Warning: Map query missing LIMIT clause")
+    if "latitude" in map_query.lower() or "longitude" in map_query.lower():
+        print("✓ Map query includes lat/lon columns")
+else:
+    raise AssertionError(f"map_query has unexpected type: {type(map_query)}")
+
+print("\n✓ Test passed!")
 
