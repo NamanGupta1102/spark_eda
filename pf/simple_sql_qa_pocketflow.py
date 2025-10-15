@@ -7,9 +7,9 @@ from langsmith import Client
 from pocketflow import Flow, Node
 import folium
 from datetime import datetime
-import dotenv
+from dotenv import load_dotenv
 
-dotenv.load_dotenv()
+load_dotenv()
 
 # Configuration
 DB_URL = os.getenv('DB_URL')
@@ -37,8 +37,9 @@ def get_schema(table_name):
         return f"Table '{table_name}' columns:\n" + "\n".join([f"- {col[0]} ({col[1]})" for col in columns])
 
 def generate_sql(question, schema):
-    """Generate SQL using LLM"""
+    """Generate SQL using LLM - returns both aggregate and detail queries"""
     from langsmith import traceable
+    import json
     
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
     
@@ -49,7 +50,21 @@ Database: PostgreSQL
 Schema:
 {schema}
 
-Generate a PostgreSQL-compatible SQL query. Return ONLY the SQL query, no explanations:"""
+Generate TWO PostgreSQL queries and return them as a JSON object:
+
+1. "answer_query": Query to answer the question (may use COUNT, SUM, AVG, GROUP BY, etc.)
+
+2. "map_query": Query to fetch individual rows with latitude and longitude for mapping.
+   - If the question involves geographic/spatial insights (locations, areas, where something is), include a query with latitude/longitude columns and relevant WHERE filters. Add LIMIT 1000.
+   - If the question is purely statistical/aggregated with no spatial component (counts, averages, top categories), set this to null or an empty string.
+   
+   Decide based on whether seeing locations on a map would be useful for the question.
+
+Return ONLY valid JSON in this exact format:
+{{
+    "answer_query": "SELECT ...",
+    "map_query": "SELECT ... LIMIT 1000" OR null
+}}"""
     
     @traceable(name="sql_generation", metadata={"model": "gpt-4o-mini", "provider": "openai"})
     def _generate_sql_inner(question, schema):
@@ -63,13 +78,16 @@ Generate a PostgreSQL-compatible SQL query. Return ONLY the SQL query, no explan
         
         inference_time = time.time() - start_time
         
-        sql = response.choices[0].message.content.strip()
+        result = response.choices[0].message.content.strip()
         
-        # Extract SQL from markdown if present
-        if "```sql" in sql:
-            sql = sql.split("```sql")[1].split("```")[0].strip()
-        elif "```" in sql:
-            sql = sql.split("```")[1].split("```")[0].strip()
+        # Extract JSON from markdown if present
+        if "```json" in result:
+            result = result.split("```json")[1].split("```")[0].strip()
+        elif "```" in result:
+            result = result.split("```")[1].split("```")[0].strip()
+        
+        # Parse JSON
+        queries = json.loads(result)
         
         # Log token usage and inference time
         tokens_used = 0
@@ -85,7 +103,7 @@ Generate a PostgreSQL-compatible SQL query. Return ONLY the SQL query, no explan
             }
             print(f"SQL Generation - Metrics: {metrics}")
         
-        return sql, tokens_used
+        return queries, tokens_used
     
     result = _generate_sql_inner(question, schema)
     return result
@@ -171,40 +189,65 @@ class GenerateSQLNode(Node):
     
     def exec(self, prep_res):
         start_time = time.time()
-        sql, tokens = generate_sql(prep_res["question"], prep_res["schema"])
+        queries, tokens = generate_sql(prep_res["question"], prep_res["schema"])
         sql_time = time.time() - start_time
-        return {"sql": sql, "tokens": tokens, "time": sql_time}
+        return {"queries": queries, "tokens": tokens, "time": sql_time}
     
     def post(self, shared, prep_res, exec_res):
-        shared["sql"] = exec_res["sql"]
+        shared["answer_query"] = exec_res["queries"]["answer_query"]
+        shared["map_query"] = exec_res["queries"]["map_query"]
         shared["sql_tokens"] = exec_res["tokens"]
         shared["sql_time"] = exec_res["time"]
-        print(f"SQL: {exec_res['sql']}")
+        print(f"Answer Query: {exec_res['queries']['answer_query']}")
+        print(f"Map Query: {exec_res['queries']['map_query']}")
         return "default"  # Return action to trigger next node
 
 class RunQueryNode(Node):
     def prep(self, shared):
-        print("\nExecuting SQL...")
-        return shared.get("sql")
+        print("\nExecuting SQL queries...")
+        return {
+            "answer_query": shared.get("answer_query"),
+            "map_query": shared.get("map_query")
+        }
     
     def exec(self, prep_res):
         start_time = time.time()
-        df = run_sql(prep_res)
+        
+        # Execute answer query
+        answer_df = run_sql(prep_res["answer_query"])
+        
+        # Execute map query only if it exists and is not empty/null
+        map_query = prep_res["map_query"]
+        if map_query and isinstance(map_query, str) and map_query.strip():
+            map_df = run_sql(map_query)
+        else:
+            map_df = None
+        
         query_time = time.time() - start_time
-        return {"df": df, "time": query_time}
+        return {"answer_df": answer_df, "map_df": map_df, "time": query_time}
     
     def post(self, shared, prep_res, exec_res):
-        shared["df"] = exec_res["df"]
+        shared["answer_df"] = exec_res["answer_df"]
+        shared["map_df"] = exec_res["map_df"]
         shared["query_time"] = exec_res["time"]
-        print(f"Got {len(exec_res['df'])} rows")
+        print(f"Answer query returned {len(exec_res['answer_df'])} rows")
+        if exec_res["map_df"] is not None:
+            print(f"Map query returned {len(exec_res['map_df'])} rows")
+        else:
+            print("No map query generated (not relevant for this question)")
         return "default"  # Return action to trigger next node
 
 class PlotMapNode(Node):
     def prep(self, shared):
-        return shared.get("df")
+        return shared.get("map_df")
     
     def exec(self, prep_res):
         df = prep_res
+        
+        # Check if df exists and is not empty
+        if df is None or len(df) == 0:
+            print("  → No data to plot, skipping map generation")
+            return None
         
         # Check if df has latitude and longitude columns
         lat_col = None
@@ -217,20 +260,31 @@ class PlotMapNode(Node):
             if 'lon' in col_lower or 'lng' in col_lower:
                 lon_col = col
         
-        if not lat_col or not lon_col or len(df) == 0:
+        if not lat_col or not lon_col:
+            print("  → No latitude/longitude columns found, skipping map generation")
             return None
         
-        # Create map centered on mean coordinates
-        center_lat = df[lat_col].mean()
-        center_lon = df[lon_col].mean()
+        # Filter out rows with null/invalid coordinates
+        df_valid = df[[lat_col, lon_col]].dropna()
+        if len(df_valid) == 0:
+            print("  → No valid coordinates found, skipping map generation")
+            return None
+        
+        # Create map centered on mean coordinates (use valid data only)
+        center_lat = df_valid[lat_col].mean()
+        center_lon = df_valid[lon_col].mean()
         
         m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
         
-        # Add markers
+        # Add markers (use original df to preserve all data)
         for _, row in df.iterrows():
-            folium.Marker(
-                location=[row[lat_col], row[lon_col]]
-            ).add_to(m)
+            if pd.notna(row[lat_col]) and pd.notna(row[lon_col]):
+                # TODO: Customize tooltip text based on your data columns
+                tooltip_text = "Location"
+                folium.Marker(
+                    location=[row[lat_col], row[lon_col]],
+                    tooltip=tooltip_text
+                ).add_to(m)
         
         # Create maps folder if it doesn't exist
         os.makedirs("maps", exist_ok=True)
@@ -245,7 +299,10 @@ class PlotMapNode(Node):
     def post(self, shared, prep_res, exec_res):
         if exec_res:
             shared["map_file"] = exec_res
-            print(f"\nMap saved to: {exec_res}")
+            print(f"\n✓ Map saved to: {exec_res}")
+        else:
+            shared["map_file"] = None
+            print("\n→ No map generated for this query")
         return "default"
 
 class GenerateAnswerNode(Node):
@@ -253,7 +310,7 @@ class GenerateAnswerNode(Node):
         print("\nGenerating answer...")
         return {
             "question": shared.get("question"),
-            "df": shared.get("df")
+            "df": shared.get("answer_df")
         }
     
     def exec(self, prep_res):
