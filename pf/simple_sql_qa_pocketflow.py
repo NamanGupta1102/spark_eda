@@ -12,7 +12,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-DB_URL = os.getenv('DB_URL')
+# PostgreSQL Configuration (commented out)
+# DB_URL = os.getenv('DB_URL')
+
+# SQLite Configuration (local database)
+DB_URL = 'sqlite:///data/dorchester_311.db'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 
@@ -27,14 +31,21 @@ def get_schema(table_name):
     """Get table schema"""
     engine = create_engine(DB_URL)
     with engine.connect() as conn:
-        result = conn.execute(text(f"""
-            SELECT column_name, data_type 
-            FROM information_schema.columns 
-            WHERE table_name = '{table_name}'
-            ORDER BY ordinal_position
-        """))
+        # PostgreSQL schema query (commented out)
+        # result = conn.execute(text(f"""
+        #     SELECT column_name, data_type 
+        #     FROM information_schema.columns 
+        #     WHERE table_name = '{table_name}'
+        #     ORDER BY ordinal_position
+        # """))
+        # columns = result.fetchall()
+        # return f"Table '{table_name}' columns:\n" + "\n".join([f"- {col[0]} ({col[1]})" for col in columns])
+        
+        # SQLite schema query
+        result = conn.execute(text(f"PRAGMA table_info({table_name})"))
         columns = result.fetchall()
-        return f"Table '{table_name}' columns:\n" + "\n".join([f"- {col[0]} ({col[1]})" for col in columns])
+        # SQLite PRAGMA returns: cid, name, type, notnull, dflt_value, pk
+        return f"Table '{table_name}' columns:\n" + "\n".join([f"- {col[1]} ({col[2]})" for col in columns])
 
 def generate_sql(question, schema):
     """Generate SQL using LLM - returns both aggregate and detail queries"""
@@ -43,14 +54,22 @@ def generate_sql(question, schema):
     
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
     
+    # PostgreSQL prompt (commented out)
+    # prompt = f"""Question: {question}
+    # Database: PostgreSQL
+    # Schema:
+    # {schema}
+    # Generate TWO PostgreSQL queries and return them as a JSON object:
+    
+    # SQLite prompt
     prompt = f"""Question: {question}
 
-Database: PostgreSQL
+Database: SQLite
 
 Schema:
 {schema}
 
-Generate TWO PostgreSQL queries and return them as a JSON object:
+Generate TWO SQLite queries and return them as a JSON object:
 
 1. "answer_query": Query to answer the question (may use COUNT, SUM, AVG, GROUP BY, etc.)
 
@@ -372,8 +391,9 @@ def main():
     get_schema_node >> generate_sql_node >> run_query_node >> plot_map_node >> generate_answer_node >> summary_node
     
     # Run pipeline
-    question = "What are the top 5 request types by count?"
-    table_name = "Dorchester_311"
+    question = "hwo many parking enforcement requests were made in May 2025?"
+    # table_name = "Dorchester_311"  # PostgreSQL table name
+    table_name = "service_requests"  # SQLite table name
     
     print("="*60)
     print("Starting PocketFlow SQL QA Pipeline")
