@@ -20,3 +20,8 @@ pf/maps
 pf/pockety
 pf/__pycache__
 pf/data
+/data
+/scripts
+/loader
+docker-compose.yml
+/docker
