@@ -1,6 +1,7 @@
 import os
 import json
 import re
+from typing import Callable
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -34,6 +35,24 @@ _load_local_env()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_SUMMARY_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", OPENAI_MODEL)
+
+# Optional LangSmith tracing
+try:
+    from langsmith import traceable  # type: ignore
+except Exception:
+    def traceable(func: Callable):  # type: ignore
+        return func
+
+
+def _langsmith_enabled() -> bool:
+    v = os.getenv("LANGCHAIN_TRACING_V2", "").strip().lower()
+    return v in ("true", "1", "yes") and bool(os.getenv("LANGCHAIN_API_KEY"))
+
+
+def _print_langsmith_banner() -> None:
+    if _langsmith_enabled():
+        project = os.getenv("LANGCHAIN_PROJECT", "default")
+        print(f"LangSmith tracing enabled (project={project})")
 
 
 def _get_db_connection():
@@ -123,6 +142,7 @@ def _read_metadata_text() -> str:
         return ""
 
 
+@traceable(name="generate_sql")
 def _llm_generate_sql(question: str, schema: str, default_model: str, metadata: str = "") -> str:
     system_prompt = (
         "You are a helpful data analyst. Generate a single, syntactically correct MySQL "
@@ -185,6 +205,7 @@ def _llm_generate_sql(question: str, schema: str, default_model: str, metadata: 
     return sql_text
 
 
+@traceable(name="execute_sql")
 def _execute_sql(sql: str) -> Dict[str, Any]:
     conn = _get_db_connection()
     try:
@@ -202,6 +223,7 @@ def _execute_sql(sql: str) -> Dict[str, Any]:
     return {"columns": cols, "rows": items}
 
 
+@traceable(name="summarize_answer")
 def _llm_generate_answer(question: str, sql: str, result: Dict[str, Any], default_model: str) -> str:
     cols = result.get("columns", [])
     rows = result.get("rows", [])
@@ -279,6 +301,7 @@ def _interactive_loop() -> None:
         sys.exit(1)
 
     database = os.environ.get("MYSQL_DATABASE", "app")
+    _print_langsmith_banner()
     metadata = _read_metadata_text()
     _print_schema(database)
 
@@ -318,6 +341,7 @@ def main() -> None:
         database = os.environ.get("MYSQL_DATABASE", "app")
         schema = _fetch_schema_snapshot(database)
         metadata = _read_metadata_text()
+        _print_langsmith_banner()
         sql = _llm_generate_sql(question, schema, OPENAI_MODEL, metadata)
         print(sql)
         result = _execute_sql(sql)
