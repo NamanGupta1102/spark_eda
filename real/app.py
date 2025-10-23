@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Callable
 
-import pymysql
+import psycopg2
 from pocketflow import Flow, Node
 from openai import OpenAI  # type: ignore
 try:
@@ -67,22 +67,15 @@ def _get_openai_client() -> OpenAI:
 
 
 def _get_db_connection():
-    host = os.environ.get("MYSQL_HOST", "127.0.0.1")
-    port = int(os.environ.get("MYSQL_PORT", "3306"))
-    user = os.environ.get("MYSQL_USER", "root")
-    password = os.environ.get("MYSQL_PASSWORD", "")
-    database = os.environ.get("MYSQL_DATABASE", "app")
+    # Prefer environment variable; fallback to Render Postgres URL from postgres_stuff
+    db_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://dorchester_db_user:6CiTHuq3z1aC8gSokVr560LX7qiF7CtW@dpg-d3pcedggjchc73aff580-a.ohio-postgres.render.com/dorchester_db",
+    )
 
     try:
-        conn = pymysql.connect(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=database,
-            charset="utf8mb4",
-            autocommit=True,
-        )
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
     except Exception as exc:
         print(f"DB connection failed: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -96,10 +89,10 @@ def _fetch_schema_snapshot(database: str) -> str:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT TABLE_NAME, COLUMN_NAME
+                SELECT table_name, column_name
                 FROM information_schema.columns
                 WHERE table_schema = %s
-                ORDER BY TABLE_NAME, ORDINAL_POSITION
+                ORDER BY table_name, ordinal_position
                 """,
                 (database,),
             )
@@ -150,7 +143,7 @@ def _read_metadata_text() -> str:
 @traceable(name="generate_sql")
 def _llm_generate_sql(question: str, schema: str, default_model: str, metadata: str = "") -> str:
     system_prompt = (
-        "You are a helpful data analyst. Generate a single, syntactically correct MySQL "
+        "You are a helpful data analyst. Generate a single, syntactically correct PostgreSQL "
         "SELECT statement based strictly on the provided schema. Do not include explanations. "
         "Only output SQL. Use table and column names exactly as shown."
     )
@@ -159,14 +152,14 @@ def _llm_generate_sql(question: str, schema: str, default_model: str, metadata: 
         user_prompt = (
             "Schema:\n" + schema + "\n\n"
             "Additional metadata (JSON):\n" + metadata + "\n\n"
-            "Instruction: Write a single MySQL SELECT to answer the question. "
+            "Instruction: Write a single PostgreSQL SELECT to answer the question. "
             "If the question is ambiguous, choose a reasonable interpretation.\n\n"
             f"Question: {question}"
         )
     else:
         user_prompt = (
             "Schema:\n" + schema + "\n\n"
-            "Instruction: Write a single MySQL SELECT to answer the question. "
+            "Instruction: Write a single PostgreSQL SELECT to answer the question. "
             "If the question is ambiguous, choose a reasonable interpretation.\n\n"
             f"Question: {question}"
         )
@@ -230,7 +223,7 @@ def _llm_generate_answer(question: str, sql: str, result: Dict[str, Any], defaul
     user_prompt = (
         "Question:\n" + question + "\n\n"
         "Executed SQL:\n" + sql + "\n\n"
-        "Result (JSON, possibly truncated):\n" + json.dumps(data_blob, ensure_ascii=False)
+        "Result (JSON, possibly truncated):\n" + json.dumps(data_blob, ensure_ascii=False, default=str)
     )
 
     client = _get_openai_client()
@@ -340,7 +333,7 @@ def _interactive_loop() -> None:
         print("OPENAI_API_KEY not configured", file=sys.stderr)
         sys.exit(1)
 
-    database = os.environ.get("MYSQL_DATABASE", "app")
+    database = os.environ.get("PGSCHEMA", "public")
     metadata = _read_metadata_text()
     _print_langsmith_banner()
     _print_schema(database)
@@ -386,7 +379,7 @@ def main() -> None:
             print("OPENAI_API_KEY not configured", file=sys.stderr)
             sys.exit(1)
 
-        database = os.environ.get("MYSQL_DATABASE", "app")
+        database = os.environ.get("PGSCHEMA", "public")
         metadata = _read_metadata_text()
         _print_langsmith_banner()
 
